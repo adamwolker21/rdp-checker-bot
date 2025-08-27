@@ -161,11 +161,24 @@ async def run_scan_logic(lines, update: Update, context: ContextTypes.DEFAULT_TY
     final_destination = target_channel if target_channel else update.effective_chat.id
 
     try:
-        await context.bot.send_message(
-            chat_id=final_destination,
-            text=final_report,
-            parse_mode='Markdown'
-        )
+        if not target_channel:
+             await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=status_message.message_id,
+                text=final_report,
+                parse_mode='Markdown'
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=final_destination,
+                text=final_report,
+                parse_mode='Markdown'
+            )
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=status_message.message_id,
+                text=f"✅ Scan complete! Results sent to {final_destination}."
+            )
         
         report_filename = "RDP_Check_Results.txt"
         with open(report_filename, 'w', encoding='utf-8') as f:
@@ -173,12 +186,6 @@ async def run_scan_logic(lines, update: Update, context: ContextTypes.DEFAULT_TY
         
         with open(report_filename, 'rb') as f:
             await context.bot.send_document(chat_id=final_destination, document=f)
-        
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=status_message.message_id,
-            text=f"✅ Scan complete! Results sent to {final_destination}."
-        )
 
     except Exception as e:
         print(f"Error sending to destination {final_destination}: {e}")
