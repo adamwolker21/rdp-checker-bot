@@ -11,11 +11,15 @@ import threading
 # -----------------------------------------------------------------------------
 # الإعدادات الهامة (سيتم قراءتها من متغيرات البيئة)
 # -----------------------------------------------------------------------------
+# 1. استبدل هذا بالتوكن الخاص ببوتك
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", 0)) # The '0' is a default if not set
+
+# 2. استبدل هذا بالـ ID الخاص بحسابك في تليجرام لتمكين أوامر المدير
+ADMIN_ID = int(os.getenv("ADMIN_ID", 0)) 
 # -----------------------------------------------------------------------------
 
 USER_SETTINGS_FILE = "user_settings.json"
+ALL_USERS_FILE = "all_users.json" # ملف جديد لتتبع كل المستخدمين
 
 # --- Web Server for UptimeRobot ---
 class KeepAliveHandler(BaseHTTPRequestHandler):
@@ -30,27 +34,34 @@ class KeepAliveHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
 def run_keep_alive_server():
-    # Railway provides the PORT environment variable.
     port = int(os.environ.get('PORT', 8080))
     server_address = ('', port)
     httpd = HTTPServer(server_address, KeepAliveHandler)
     httpd.serve_forever()
 
-# --- Settings Persistence Functions ---
-def load_user_settings():
-    """Loads user settings from a JSON file."""
-    if os.path.exists(USER_SETTINGS_FILE):
-        with open(USER_SETTINGS_FILE, 'r') as f:
+# --- User Tracking and Settings Functions ---
+def load_json_file(filename):
+    """Loads a JSON file and returns its content."""
+    if os.path.exists(filename):
+        with open(filename, 'r') as f:
             try:
                 return json.load(f)
             except json.JSONDecodeError:
-                return {}
-    return {}
+                return {} if filename == USER_SETTINGS_FILE else []
+    return {} if filename == USER_SETTINGS_FILE else []
 
-def save_user_settings(all_settings):
-    """Saves all user settings to a JSON file."""
-    with open(USER_SETTINGS_FILE, 'w') as f:
-        json.dump(all_settings, f, indent=4)
+def save_json_file(data, filename):
+    """Saves data to a JSON file."""
+    with open(filename, 'w') as f:
+        json.dump(data, f, indent=4)
+
+def track_user(user_id):
+    """Adds a user ID to the list of all users if not already present."""
+    user_id_str = str(user_id)
+    all_users = load_json_file(ALL_USERS_FILE)
+    if user_id_str not in all_users:
+        all_users.append(user_id_str)
+        save_json_file(all_users, ALL_USERS_FILE)
 
 # --- Core Checking Logic ---
 def check_rdp(line_info):
@@ -100,7 +111,7 @@ def check_rdp(line_info):
 async def run_scan_logic(lines, update: Update, context: ContextTypes.DEFAULT_TYPE):
     """The core logic for scanning a list of lines and reporting results."""
     user_id = str(update.effective_user.id)
-    all_settings = load_user_settings()
+    all_settings = load_json_file(USER_SETTINGS_FILE)
     user_settings = all_settings.get(user_id, {'port': 3389, 'timeout': 2, 'concurrency': 15})
     target_channel = user_settings.get('target_channel')
 
@@ -147,7 +158,6 @@ async def run_scan_logic(lines, update: Update, context: ContextTypes.DEFAULT_TY
     
     final_report = "\n".join(report_content)
     
-    # Determine where to send the final report
     final_destination = target_channel if target_channel else update.effective_chat.id
 
     try:
@@ -181,6 +191,7 @@ async def run_scan_logic(lines, update: Update, context: ContextTypes.DEFAULT_TY
 
 # --- Telegram Bot Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    track_user(update.effective_user.id)
     await update.message.reply_text(
         "Welcome to the RDP Status Checker Bot!\n\n"
         "Send me a list of RDPs (one per line) or upload a .txt file to start scanning.\n\n"
@@ -188,6 +199,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    track_user(update.effective_user.id)
     user_id = update.effective_user.id
     help_text = (
         "Here are the available commands:\n\n"
@@ -195,29 +207,32 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "*/help* - Shows this help message.\n"
         "*/settings* - Displays your current scan settings.\n"
         "*/set <port> <timeout> <concurrency>* - Sets new values for your settings. \n_Example: `/set 3389 3 20`_\n"
-        "*/reset* - Resets your settings to the default values.\n\n"
-        "*Channel/Group Posting:*\n"
-        "*/setchannel <ID or @username>* - Set a channel/group to post results to. The bot must be an admin there.\n_Example: `/setchannel @MyRDPResults`_\n"
-        "*/removechannel* - Stop posting to a channel/group and send results here instead."
+        "*/reset* - Resets your settings to the default values."
     )
     
     if user_id == ADMIN_ID:
-        help_text += "\n\n*Admin Commands:*\n*/stats* - Shows bot usage statistics."
+        help_text += (
+            "\n\n*Admin Commands:*\n"
+            "*/stats* - Shows bot usage statistics.\n"
+            "*/setchannel <ID or @username>* - Set a channel/group to post results to.\n"
+            "*/removechannel* - Stop posting to a channel/group."
+        )
 
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
 async def set_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
+    track_user(user_id)
     try:
         parts = context.args
         if len(parts) == 3:
             port, timeout, concurrency = map(int, parts)
             
-            all_settings = load_user_settings()
+            all_settings = load_json_file(USER_SETTINGS_FILE)
             if user_id not in all_settings:
                 all_settings[user_id] = {}
             all_settings[user_id].update({'port': port, 'timeout': timeout, 'concurrency': concurrency})
-            save_user_settings(all_settings)
+            save_json_file(all_settings, USER_SETTINGS_FILE)
             
             await update.message.reply_text(
                 f"✅ Settings updated successfully:\n"
@@ -232,7 +247,8 @@ async def set_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
-    all_settings = load_user_settings()
+    track_user(user_id)
+    all_settings = load_json_file(USER_SETTINGS_FILE)
     user_settings = all_settings.get(user_id, {})
     
     port = user_settings.get('port', 3389)
@@ -250,28 +266,31 @@ async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def reset_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
-    all_settings = load_user_settings()
+    track_user(user_id)
+    all_settings = load_json_file(USER_SETTINGS_FILE)
     if user_id in all_settings:
         all_settings[user_id] = {} # Clear all settings for the user
-        save_user_settings(all_settings)
+        save_json_file(all_settings, USER_SETTINGS_FILE)
     await update.message.reply_text("⚙️ All your settings have been reset to default.")
     await show_settings(update, context)
 
 async def set_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
+    if update.effective_user.id != ADMIN_ID: return # Admin only
+    track_user(user_id)
     if not context.args:
         await update.message.reply_text("Please provide a channel/group ID or username. Example: /setchannel @mychannel")
         return
     
     channel_id = context.args[0]
-    all_settings = load_user_settings()
+    all_settings = load_json_file(USER_SETTINGS_FILE)
     if user_id not in all_settings:
         all_settings[user_id] = {}
     
     try:
         await context.bot.send_message(chat_id=channel_id, text="✅ Bot connected successfully! Scan results will be posted here.")
         all_settings[user_id]['target_channel'] = channel_id
-        save_user_settings(all_settings)
+        save_json_file(all_settings, USER_SETTINGS_FILE)
         await update.message.reply_text(f"Success! Results will now be sent to {channel_id}.")
     except Exception as e:
         print(e)
@@ -279,10 +298,12 @@ async def set_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def remove_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
-    all_settings = load_user_settings()
+    if update.effective_user.id != ADMIN_ID: return # Admin only
+    track_user(user_id)
+    all_settings = load_json_file(USER_SETTINGS_FILE)
     if user_id in all_settings and 'target_channel' in all_settings[user_id]:
         del all_settings[user_id]['target_channel']
-        save_user_settings(all_settings)
+        save_json_file(all_settings, USER_SETTINGS_FILE)
         await update.message.reply_text("✅ Success! Results will now be sent to you in this private chat.")
     else:
         await update.message.reply_text("No target channel is currently set.")
@@ -291,14 +312,13 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Admin command to show bot statistics."""
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
-        # Silently ignore if not admin
         return
 
-    all_settings = load_user_settings()
-    user_count = len(all_settings)
-    await update.message.reply_text(f"📊 Bot Stats:\nThere are currently {user_count} users with custom settings.")
+    all_users = load_json_file(ALL_USERS_FILE)
+    await update.message.reply_text(f"📊 Bot Stats:\nThere are currently {len(all_users)} unique users who have interacted with the bot.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    track_user(update.effective_user.id)
     lines = [line.strip() for line in update.message.text.split('\n') if line.strip()]
     if lines:
         await run_scan_logic(lines, update, context)
@@ -306,6 +326,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("No valid lines found to check. Please send a list of RDPs or a .txt file.")
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    track_user(update.effective_user.id)
     file = await context.bot.get_file(update.message.document.file_id)
     file_path = f"{update.message.document.file_id}.txt"
     await file.download_to_drive(file_path)
