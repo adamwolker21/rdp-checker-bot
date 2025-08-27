@@ -254,15 +254,20 @@ async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     port = user_settings.get('port', 3389)
     timeout = user_settings.get('timeout', 2)
     concurrency = user_settings.get('concurrency', 15)
-    target_channel = user_settings.get('target_channel', 'Private Chat')
-
-    await update.message.reply_text(
+    
+    settings_text = (
         f"⚙️ Current Settings:\n"
         f"- Default Port: {port}\n"
         f"- Timeout: {timeout} seconds\n"
-        f"- Concurrency: {concurrency}\n"
-        f"- Post Results To: {target_channel}"
+        f"- Concurrency: {concurrency}"
     )
+
+    # Only show the target channel to the admin
+    if update.effective_user.id == ADMIN_ID:
+        target_channel = user_settings.get('target_channel', 'Private Chat')
+        settings_text += f"\n- Post Results To: {target_channel}"
+
+    await update.message.reply_text(settings_text)
 
 async def reset_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
