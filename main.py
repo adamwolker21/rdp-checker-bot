@@ -136,7 +136,7 @@ async def run_scan_logic(lines, update: Update, context: ContextTypes.DEFAULT_TY
 
     # --- Create Formatted Report String ---
     report_content = [
-        "� *RDP Scan Results* 📊", "="*20, f"*Total:* {len(lines)}"
+        "📊 *RDP Scan Results* 📊", "="*20, f"*Total:* {len(lines)}"
     ]
     if online_results:
         report_content.extend([f"\n*✅ Online: {len(online_results)}*", *online_results])
