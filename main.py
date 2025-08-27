@@ -160,26 +160,25 @@ async def run_scan_logic(lines, update: Update, context: ContextTypes.DEFAULT_TY
     
     final_destination = target_channel if target_channel else update.effective_chat.id
 
+    # --- Send Results ---
     try:
         if not target_channel:
-             await context.bot.edit_message_text(
+            # If no channel, edit the original message with the full report
+            await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
                 message_id=status_message.message_id,
                 text=final_report,
                 parse_mode='Markdown'
             )
         else:
+            # If channel is set, send a new message to the channel
             await context.bot.send_message(
                 chat_id=final_destination,
                 text=final_report,
                 parse_mode='Markdown'
             )
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=status_message.message_id,
-                text=f"✅ Scan complete! Results sent to {final_destination}."
-            )
         
+        # Send the file report
         report_filename = "RDP_Check_Results.txt"
         with open(report_filename, 'w', encoding='utf-8') as f:
             f.write(final_report.replace('*', ''))
@@ -187,12 +186,24 @@ async def run_scan_logic(lines, update: Update, context: ContextTypes.DEFAULT_TY
         with open(report_filename, 'rb') as f:
             await context.bot.send_document(chat_id=final_destination, document=f)
 
+        # Confirm completion to the user
+        if target_channel:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=status_message.message_id,
+                text=f"✅ Scan complete! Results sent to {final_destination}."
+            )
+
     except Exception as e:
         print(f"Error sending to destination {final_destination}: {e}")
+        error_message = (
+            f"❌ Scan complete, but failed to send results to {final_destination}.\n\n"
+            "Please check if the channel/group ID is correct and that the bot has been added as an administrator."
+        )
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=status_message.message_id,
-            text=f"❌ Scan complete, but failed to send results. Please check if the bot is an admin in the channel/group and try again."
+            text=error_message
         )
 
 
