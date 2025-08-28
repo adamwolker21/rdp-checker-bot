@@ -145,8 +145,8 @@ async def run_scan_logic(lines, update: Update, context: ContextTypes.DEFAULT_TY
             except Exception as e:
                 print(f"An error occurred during processing: {e}")
 
-    # --- Save Online Results (Admin Only) ---
-    if update.effective_user.id == ADMIN_ID and online_results:
+    # --- Save Online Results (For ALL users) ---
+    if online_results:
         saved_online = load_json_file(SAVED_ONLINE_FILE, default_type=list)
         new_items = [item for item in online_results if item not in saved_online]
         saved_online.extend(new_items)
