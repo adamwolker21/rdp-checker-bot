@@ -199,23 +199,43 @@ async def settings_entry_point(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
+    # أجب عن ال callback فوراً حتى لا يبقى الزر معلقاً في الواجهة
+    try:
+        await query.answer(text="Processing...", show_alert=False)
+    except Exception:
+        # في حال فشل الرد السريع، تجاهل واستمر
+        pass
+
     choice = query.data
     context.user_data['choice'] = choice
-    
+
     if choice == 'done':
-        await query.edit_message_text(text="✅ Settings menu closed.")
+        # أغلق القائمة ونهي المحادثة
+        try:
+            await query.edit_message_text(text="✅ Settings menu closed.")
+        except Exception:
+            pass
         context.user_data.clear()
         return ConversationHandler.END
-    
+
     prompt_text = {
         'change_port': "Please enter the new default port:",
         'change_timeout': "Please enter the new timeout in seconds (1-10):",
         'change_concurrency': "Please enter the new concurrency level (1-50):"
     }
-    # Edit the original settings message to ask for the value
-    await query.edit_message_text(text=prompt_text[choice])
-    # Return state so ConversationHandler knows we're waiting for text input
+
+    # حاول تعديل رسالة القوائم، وإن لم ينجح أرسل رسالة عادية
+    try:
+        await query.edit_message_text(text=prompt_text[choice])
+    except Exception:
+        try:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=prompt_text[choice])
+        except Exception:
+            # إذا فشل أيضاً، سجل وانهِ المحادثة بأمان
+            print('Failed to prompt user for setting value.')
+            context.user_data.clear()
+            return ConversationHandler.END
+
     return TYPING_REPLY
 
 # New command entry points so users can also use /change_port etc.
@@ -389,6 +409,8 @@ def main() -> None:
     )
 
     application.add_handler(conv_handler)
+    # إضافة معالج عام للتعامل مع callback queries حتى لو لم تكن ConversationHandler في حالة متوقعة
+    application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("reset", reset_settings))
