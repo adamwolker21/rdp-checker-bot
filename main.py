@@ -109,51 +109,80 @@ async def run_scan_logic(lines, update: Update, context: ContextTypes.DEFAULT_TY
     user_id = str(update.effective_user.id)
     all_settings = load_json_file(USER_SETTINGS_FILE, default_type=dict)
     user_settings = all_settings.get(user_id, {'port': 3389, 'timeout': 2, 'concurrency': 15})
+    
+    # إضافة تحقق إضافي لإعدادات المستخدم
+    if 'concurrency' not in user_settings or not (1 <= user_settings['concurrency'] <= 50):
+        user_settings['concurrency'] = 15
+    
     status_message = await update.message.reply_text(f"🔍 Received {len(lines)} lines. Starting scan...")
     tasks = [{'line': line, 'default_port': user_settings['port'], 'timeout': user_settings['timeout']} for line in lines]
     online_results, offline_results, invalid_results = [], [], []
     checked_count = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=user_settings['concurrency']) as executor:
-        futures = [executor.submit(check_rdp, task) for task in tasks]
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                res = future.result()
-                if res['status'] == 'Online':
-                    online_results.append(res['updatedLine'])
-                elif res['status'] == 'Offline':
-                    offline_results.append(res['line'])
-                else:
-                    invalid_results.append(res['line'])
-                checked_count += 1
-                if checked_count % 5 == 0 or checked_count == len(lines):
-                     await context.bot.edit_message_text(
-                        chat_id=update.effective_chat.id,
-                        message_id=status_message.message_id,
-                        text=f"🔍 Scanning... ({checked_count}/{len(lines)})"
-                    )
-            except Exception as e:
-                print(f"An error occurred during processing: {e}")
+    
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=user_settings['concurrency']) as executor:
+            futures = [executor.submit(check_rdp, task) for task in tasks]
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    res = future.result()
+                    if res['status'] == 'Online':
+                        online_results.append(res['updatedLine'])
+                    elif res['status'] == 'Offline':
+                        offline_results.append(res['line'])
+                    else:
+                        invalid_results.append(res['line'])
+                    checked_count += 1
+                    if checked_count % 5 == 0 or checked_count == len(lines):
+                         await context.bot.edit_message_text(
+                            chat_id=update.effective_chat.id,
+                            message_id=status_message.message_id,
+                            text=f"🔍 Scanning... ({checked_count}/{len(lines)})"
+                        )
+                except Exception as e:
+                    logger.error(f"An error occurred during processing: {e}")
+                    invalid_results.append(f"Error processing line: {res.get('line', 'Unknown')}")
 
-    if online_results:
-        saved_online = load_json_file(SAVED_ONLINE_FILE, default_type=list)
-        new_items = [item for item in online_results if item not in saved_online]
-        saved_online.extend(new_items)
-        save_json_file(saved_online, SAVED_ONLINE_FILE)
+        if online_results:
+            saved_online = load_json_file(SAVED_ONLINE_FILE, default_type=list)
+            new_items = [item for item in online_results if item not in saved_online]
+            saved_online.extend(new_items)
+            save_json_file(saved_online, SAVED_ONLINE_FILE)
 
-    report_content = ["📊 *RDP Scan Results* 📊", "="*20, f"*Total:* {len(lines)}"]
-    if online_results:
-        report_content.extend([f"\n*✅ Online: {len(online_results)}*", *online_results])
-    if offline_results:
-        report_content.extend([f"\n*❌ Offline: {len(offline_results)}*", *offline_results])
-    if invalid_results:
-        report_content.extend([f"\n*⚠️ Invalid: {len(invalid_results)}*", *invalid_results])
-    final_report = "\n".join(report_content)
-    await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status_message.message_id, text=final_report, parse_mode='Markdown')
-    report_filename = "RDP_Check_Results.txt"
-    with open(report_filename, 'w', encoding='utf-8') as f:
-        f.write(final_report.replace('*', ''))
-    with open(report_filename, 'rb') as f:
-        await context.bot.send_document(chat_id=update.effective_chat.id, document=f)
+        report_content = ["📊 *RDP Scan Results* 📊", "="*20, f"*Total:* {len(lines)}"]
+        if online_results:
+            report_content.extend([f"\n*✅ Online: {len(online_results)}*", *online_results])
+        if offline_results:
+            report_content.extend([f"\n*❌ Offline: {len(offline_results)}*", *offline_results])
+        if invalid_results:
+            report_content.extend([f"\n*⚠️ Invalid: {len(invalid_results)}*", *invalid_results])
+        final_report = "\n".join(report_content)
+        
+        # تقسيم التقرير إذا كان طويلاً جداً
+        if len(final_report) > 4000:
+            parts = [final_report[i:i+4000] for i in range(0, len(final_report), 4000)]
+            for part in parts:
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=part, parse_mode='Markdown')
+        else:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id, 
+                message_id=status_message.message_id, 
+                text=final_report, 
+                parse_mode='Markdown'
+            )
+            
+        report_filename = "RDP_Check_Results.txt"
+        with open(report_filename, 'w', encoding='utf-8') as f:
+            f.write(final_report.replace('*', ''))
+        with open(report_filename, 'rb') as f:
+            await context.bot.send_document(chat_id=update.effective_chat.id, document=f)
+            
+    except Exception as e:
+        logger.error(f"Error in run_scan_logic: {e}")
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=status_message.message_id,
+            text=f"❌ An error occurred during scanning: {str(e)}"
+        )
 
 # --- Telegram Bot Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -305,12 +334,14 @@ async def reset_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("⚙️ All your settings have been reset to default.")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != ADMIN_ID: return
+    if update.effective_user.id != ADMIN_ID: 
+        return
     all_users = load_json_file(ALL_USERS_FILE, default_type=list)
     await update.message.reply_text(f"📊 Bot Stats:\nThere are currently {len(all_users)} unique users who have interacted with the bot.")
 
 async def show_saved(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != ADMIN_ID: return
+    if update.effective_user.id != ADMIN_ID: 
+        return
     saved_online = load_json_file(SAVED_ONLINE_FILE, default_type=list)
     if not saved_online:
         await update.message.reply_text("🗂️ The saved results list is currently empty.")
@@ -326,12 +357,18 @@ async def show_saved(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text(report_text)
 
 async def clear_saved(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != ADMIN_ID: return
+    if update.effective_user.id != ADMIN_ID: 
+        return
     save_json_file([], SAVED_ONLINE_FILE)
     await update.message.reply_text("🗑️ All saved online results have been cleared.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     track_user(update.effective_user.id)
+    
+    # تجاهل الرسائل التي تبدأ بشرطة مائلة (أوامر)
+    if update.message.text.startswith('/'):
+        return
+    
     lines = [line.strip() for line in update.message.text.split('\n') if line.strip()]
     is_valid_list = any(re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', line) for line in lines)
     if is_valid_list:
