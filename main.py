@@ -421,6 +421,9 @@ def main() -> None:
     application.add_handler(CommandHandler("change_concurrency", change_concurrency_cmd))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.Document.TEXT, handle_file))
+    
+    # إضافة معالج منفصل لاستقبال ضغطات الأزرار
+    application.add_handler(CallbackQueryHandler(button_callback))
 
     # تشغيل البوت
     print("Bot is running...")
