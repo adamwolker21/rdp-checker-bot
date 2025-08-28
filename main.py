@@ -132,7 +132,7 @@ async def run_scan_logic(lines, update: Update, context: ContextTypes.DEFAULT_TY
         saved_online.extend(new_items)
         save_json_file(saved_online, SAVED_ONLINE_FILE)
 
-    report_content = ["📊 *RDP Scan Results* �", "="*20, f"*Total:* {len(lines)}"]
+    report_content = ["📊 *RDP Scan Results* 📊", "="*20, f"*Total:* {len(lines)}"]
     if online_results:
         report_content.extend([f"\n*✅ Online: {len(online_results)}*", *online_results])
     if offline_results:
