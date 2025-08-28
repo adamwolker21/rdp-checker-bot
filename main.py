@@ -307,9 +307,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await run_scan_logic(lines, update, context)
     else:
         await update.message.reply_text(
-            "It seems this is not a valid RDP list. Please send a message where each line starts with an IP address, like:\n\n"
+            "It seems this is not a valid RDP list. Please send a message with one of the following formats per line:\n\n"
             "`123.45.67.89`\n"
             "`123.45.67.89:8080`\n"
+            "`123.45.67.89;3389`\n"
             "`123.45.67.89:3389@user;pass`",
             parse_mode='Markdown'
         )
