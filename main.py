@@ -19,7 +19,8 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 # -----------------------------------------------------------------------------
 
 USER_SETTINGS_FILE = "user_settings.json"
-ALL_USERS_FILE = "all_users.json" # ملف جديد لتتبع كل المستخدمين
+ALL_USERS_FILE = "all_users.json"
+SAVED_ONLINE_FILE = "saved_online.json" # ملف جديد لحفظ النتائج المتصلة
 
 # --- Web Server for UptimeRobot ---
 class KeepAliveHandler(BaseHTTPRequestHandler):
@@ -40,15 +41,15 @@ def run_keep_alive_server():
     httpd.serve_forever()
 
 # --- User Tracking and Settings Functions ---
-def load_json_file(filename):
+def load_json_file(filename, default_type=list):
     """Loads a JSON file and returns its content."""
     if os.path.exists(filename):
         with open(filename, 'r') as f:
             try:
                 return json.load(f)
             except json.JSONDecodeError:
-                return {} if filename == USER_SETTINGS_FILE else []
-    return {} if filename == USER_SETTINGS_FILE else []
+                return default_type()
+    return default_type()
 
 def save_json_file(data, filename):
     """Saves data to a JSON file."""
@@ -58,7 +59,7 @@ def save_json_file(data, filename):
 def track_user(user_id):
     """Adds a user ID to the list of all users if not already present."""
     user_id_str = str(user_id)
-    all_users = load_json_file(ALL_USERS_FILE)
+    all_users = load_json_file(ALL_USERS_FILE, default_type=list)
     if user_id_str not in all_users:
         all_users.append(user_id_str)
         save_json_file(all_users, ALL_USERS_FILE)
@@ -111,9 +112,8 @@ def check_rdp(line_info):
 async def run_scan_logic(lines, update: Update, context: ContextTypes.DEFAULT_TYPE):
     """The core logic for scanning a list of lines and reporting results."""
     user_id = str(update.effective_user.id)
-    all_settings = load_json_file(USER_SETTINGS_FILE)
+    all_settings = load_json_file(USER_SETTINGS_FILE, default_type=dict)
     user_settings = all_settings.get(user_id, {'port': 3389, 'timeout': 2, 'concurrency': 15})
-    target_channel = user_settings.get('target_channel')
 
     status_message = await update.message.reply_text(f"🔍 Received {len(lines)} lines. Starting scan...")
 
@@ -145,6 +145,13 @@ async def run_scan_logic(lines, update: Update, context: ContextTypes.DEFAULT_TY
             except Exception as e:
                 print(f"An error occurred during processing: {e}")
 
+    # --- Save Online Results (Admin Only) ---
+    if update.effective_user.id == ADMIN_ID and online_results:
+        saved_online = load_json_file(SAVED_ONLINE_FILE, default_type=list)
+        new_items = [item for item in online_results if item not in saved_online]
+        saved_online.extend(new_items)
+        save_json_file(saved_online, SAVED_ONLINE_FILE)
+
     # --- Create Formatted Report String ---
     report_content = [
         "📊 *RDP Scan Results* 📊", "="*20, f"*Total:* {len(lines)}"
@@ -157,54 +164,20 @@ async def run_scan_logic(lines, update: Update, context: ContextTypes.DEFAULT_TY
         report_content.extend([f"\n*⚠️ Invalid: {len(invalid_results)}*", *invalid_results])
     
     final_report = "\n".join(report_content)
+
+    await context.bot.edit_message_text(
+        chat_id=update.effective_chat.id,
+        message_id=status_message.message_id,
+        text=final_report,
+        parse_mode='Markdown'
+    )
     
-    final_destination = target_channel if target_channel else update.effective_chat.id
-
-    # --- Send Results ---
-    try:
-        if not target_channel:
-            # If no channel, edit the original message with the full report
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=status_message.message_id,
-                text=final_report,
-                parse_mode='Markdown'
-            )
-        else:
-            # If channel is set, send a new message to the channel
-            await context.bot.send_message(
-                chat_id=final_destination,
-                text=final_report,
-                parse_mode='Markdown'
-            )
-        
-        # Send the file report
-        report_filename = "RDP_Check_Results.txt"
-        with open(report_filename, 'w', encoding='utf-8') as f:
-            f.write(final_report.replace('*', ''))
-        
-        with open(report_filename, 'rb') as f:
-            await context.bot.send_document(chat_id=final_destination, document=f)
-
-        # Confirm completion to the user
-        if target_channel:
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=status_message.message_id,
-                text=f"✅ Scan complete! Results sent to {final_destination}."
-            )
-
-    except Exception as e:
-        print(f"Error sending to destination {final_destination}: {e}")
-        error_message = (
-            f"❌ Scan complete, but failed to send results to {final_destination}.\n\n"
-            "Please check if the channel/group ID is correct and that the bot has been added as an administrator."
-        )
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=status_message.message_id,
-            text=error_message
-        )
+    report_filename = "RDP_Check_Results.txt"
+    with open(report_filename, 'w', encoding='utf-8') as f:
+        f.write(final_report.replace('*', ''))
+    
+    with open(report_filename, 'rb') as f:
+        await context.bot.send_document(chat_id=update.effective_chat.id, document=f)
 
 
 # --- Telegram Bot Handlers ---
@@ -232,8 +205,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         help_text += (
             "\n\n*Admin Commands:*\n"
             "*/stats* - Shows bot usage statistics.\n"
-            "*/setchannel <ID or @username>* - Set a channel/group to post results to.\n"
-            "*/removechannel* - Stop posting to a channel/group."
+            "*/saved* - View all saved online results.\n"
+            "*/clearsaved* - Clear all saved online results."
         )
 
     await update.message.reply_text(help_text, parse_mode='Markdown')
@@ -246,7 +219,7 @@ async def set_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if len(parts) == 3:
             port, timeout, concurrency = map(int, parts)
             
-            all_settings = load_json_file(USER_SETTINGS_FILE)
+            all_settings = load_json_file(USER_SETTINGS_FILE, default_type=dict)
             if user_id not in all_settings:
                 all_settings[user_id] = {}
             all_settings[user_id].update({'port': port, 'timeout': timeout, 'concurrency': concurrency})
@@ -266,7 +239,7 @@ async def set_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     track_user(user_id)
-    all_settings = load_json_file(USER_SETTINGS_FILE)
+    all_settings = load_json_file(USER_SETTINGS_FILE, default_type=dict)
     user_settings = all_settings.get(user_id, {})
     
     port = user_settings.get('port', 3389)
@@ -279,66 +252,49 @@ async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"- Timeout: {timeout} seconds\n"
         f"- Concurrency: {concurrency}"
     )
-
-    # Only show the target channel to the admin
-    if update.effective_user.id == ADMIN_ID:
-        target_channel = user_settings.get('target_channel', 'Private Chat')
-        settings_text += f"\n- Post Results To: {target_channel}"
-
     await update.message.reply_text(settings_text)
 
 async def reset_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     track_user(user_id)
-    all_settings = load_json_file(USER_SETTINGS_FILE)
+    all_settings = load_json_file(USER_SETTINGS_FILE, default_type=dict)
     if user_id in all_settings:
         all_settings[user_id] = {} # Clear all settings for the user
         save_json_file(all_settings, USER_SETTINGS_FILE)
     await update.message.reply_text("⚙️ All your settings have been reset to default.")
     await show_settings(update, context)
 
-async def set_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = str(update.effective_user.id)
-    if update.effective_user.id != ADMIN_ID: return # Admin only
-    track_user(user_id)
-    if not context.args:
-        await update.message.reply_text("Please provide a channel/group ID or username. Example: /setchannel @mychannel")
-        return
-    
-    channel_id = context.args[0]
-    all_settings = load_json_file(USER_SETTINGS_FILE)
-    if user_id not in all_settings:
-        all_settings[user_id] = {}
-    
-    try:
-        await context.bot.send_message(chat_id=channel_id, text="✅ Bot connected successfully! Scan results will be posted here.")
-        all_settings[user_id]['target_channel'] = channel_id
-        save_json_file(all_settings, USER_SETTINGS_FILE)
-        await update.message.reply_text(f"Success! Results will now be sent to {channel_id}.")
-    except Exception as e:
-        print(e)
-        await update.message.reply_text(f"Could not connect to {channel_id}. Please make sure the ID is correct and the bot is an admin in the channel/group.")
-
-async def remove_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = str(update.effective_user.id)
-    if update.effective_user.id != ADMIN_ID: return # Admin only
-    track_user(user_id)
-    all_settings = load_json_file(USER_SETTINGS_FILE)
-    if user_id in all_settings and 'target_channel' in all_settings[user_id]:
-        del all_settings[user_id]['target_channel']
-        save_json_file(all_settings, USER_SETTINGS_FILE)
-        await update.message.reply_text("✅ Success! Results will now be sent to you in this private chat.")
-    else:
-        await update.message.reply_text("No target channel is currently set.")
-
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Admin command to show bot statistics."""
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        return
-
-    all_users = load_json_file(ALL_USERS_FILE)
+    if update.effective_user.id != ADMIN_ID: return
+    all_users = load_json_file(ALL_USERS_FILE, default_type=list)
     await update.message.reply_text(f"📊 Bot Stats:\nThere are currently {len(all_users)} unique users who have interacted with the bot.")
+
+async def show_saved(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to show saved online results."""
+    if update.effective_user.id != ADMIN_ID: return
+    saved_online = load_json_file(SAVED_ONLINE_FILE, default_type=list)
+    if not saved_online:
+        await update.message.reply_text("🗂️ The saved results list is currently empty.")
+        return
+    
+    report_text = f"🗂️ Saved Online RDPs ({len(saved_online)}):\n\n" + "\n".join(saved_online)
+    
+    # Telegram messages have a character limit, so send as a file if too long
+    if len(report_text) > 4000:
+        with open("saved_results.txt", "w", encoding="utf-8") as f:
+            f.write("\n".join(saved_online))
+        with open("saved_results.txt", "rb") as f:
+            await context.bot.send_document(chat_id=update.effective_chat.id, document=f, caption="Here are all the saved online results.")
+        os.remove("saved_results.txt")
+    else:
+        await update.message.reply_text(report_text)
+
+async def clear_saved(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to clear all saved results."""
+    if update.effective_user.id != ADMIN_ID: return
+    save_json_file([], SAVED_ONLINE_FILE)
+    await update.message.reply_text("🗑️ All saved online results have been cleared.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     track_user(update.effective_user.id)
@@ -383,9 +339,9 @@ def main() -> None:
     application.add_handler(CommandHandler("set", set_settings))
     application.add_handler(CommandHandler("settings", show_settings))
     application.add_handler(CommandHandler("reset", reset_settings))
-    application.add_handler(CommandHandler("setchannel", set_channel))
-    application.add_handler(CommandHandler("removechannel", remove_channel))
     application.add_handler(CommandHandler("stats", stats))
+    application.add_handler(CommandHandler("saved", show_saved))
+    application.add_handler(CommandHandler("clearsaved", clear_saved))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.Document.TEXT, handle_file))
 
