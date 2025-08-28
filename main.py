@@ -380,6 +380,35 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     else:
         await update.message.reply_text("The uploaded file is empty.")
 
+# --- Fallback handler for clients that send the menu button text as a normal message
+# Some Telegram clients (or keyboard types) send the button label as a regular message
+# instead of a CallbackQuery. To support those clients, map the visible menu texts
+# to the same command handlers.
+async def menu_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = (update.message.text or "").strip()
+    # Map substrings because buttons include current values like 'Change Port (3389)'
+    try:
+        if 'Change Port' in text:
+            await change_port_cmd(update, context)
+            return
+        if 'Change Timeout' in text:
+            await change_timeout_cmd(update, context)
+            return
+        if 'Change Concurrency' in text:
+            await change_concurrency_cmd(update, context)
+            return
+        if text.lower() == 'done' or 'done' in text:
+            # behave like pressing Done
+            await cancel(update, context)
+            return
+    except Exception as e:
+        print(f"menu_text_handler error: {e}")
+        # fall through to normal handlers if mapping fails
+
+    # If it wasn't one of our menu texts, pass to the normal message handler
+    await handle_message(update, context)
+
+
 def main() -> None:
     if not TELEGRAM_BOT_TOKEN or not ADMIN_ID:
         print("!!! ERROR: Please set TELEGRAM_BOT_TOKEN and ADMIN_ID environment variables !!!")
@@ -422,6 +451,9 @@ def main() -> None:
     application.add_handler(CommandHandler("change_timeout", change_timeout_cmd))
     application.add_handler(CommandHandler("change_concurrency", change_concurrency_cmd))
 
+    # First handle cases where the client sent the menu button text as a message
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_text_handler))
+    # Then the general text handler (scans, etc.)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.Document.TEXT, handle_file))
 
