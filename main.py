@@ -213,7 +213,28 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         'change_timeout': "Please enter the new timeout in seconds (1-10):",
         'change_concurrency': "Please enter the new concurrency level (1-50):"
     }
+    # Edit the original settings message to ask for the value
     await query.edit_message_text(text=prompt_text[choice])
+    # Return state so ConversationHandler knows we're waiting for text input
+    return TYPING_REPLY
+
+# New command entry points so users can also use /change_port etc.
+async def change_port_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    track_user(update.effective_user.id)
+    context.user_data['choice'] = 'change_port'
+    await update.message.reply_text("Please enter the new default port:")
+    return TYPING_REPLY
+
+async def change_timeout_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    track_user(update.effective_user.id)
+    context.user_data['choice'] = 'change_timeout'
+    await update.message.reply_text("Please enter the new timeout in seconds (1-10):")
+    return TYPING_REPLY
+
+async def change_concurrency_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    track_user(update.effective_user.id)
+    context.user_data['choice'] = 'change_concurrency'
+    await update.message.reply_text("Please enter the new concurrency level (1-50):")
     return TYPING_REPLY
 
 async def received_setting_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -228,7 +249,11 @@ async def received_setting_value(update: Update, context: ContextTypes.DEFAULT_T
             all_settings[user_id] = {}
 
         key_map = {'change_port': 'port', 'change_timeout': 'timeout', 'change_concurrency': 'concurrency'}
-        setting_key = key_map[choice]
+        setting_key = key_map.get(choice)
+        if setting_key is None:
+            await update.message.reply_text("An error occurred: unknown setting. Please try /settings again.")
+            context.user_data.clear()
+            return ConversationHandler.END
         
         if (setting_key == 'timeout' and not 1 <= value <= 10) or \
            (setting_key == 'concurrency' and not 1 <= value <= 50):
@@ -242,8 +267,15 @@ async def received_setting_value(update: Update, context: ContextTypes.DEFAULT_T
     
     except (ValueError, KeyError):
         await update.message.reply_text("Invalid input. Please enter a valid number.")
+        return TYPING_REPLY
 
-    await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=context.user_data['settings_message_id'])
+    # If we opened settings menu previously, try to delete/edit it; if not, ignore safely
+    if 'settings_message_id' in context.user_data:
+        try:
+            await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=context.user_data['settings_message_id'])
+        except Exception:
+            pass
+
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -340,8 +372,14 @@ def main() -> None:
 
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
+    # ConversationHandler now accepts multiple entry points including direct /change_* commands
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("settings", settings_entry_point)],
+        entry_points=[
+            CommandHandler("settings", settings_entry_point),
+            CommandHandler("change_port", change_port_cmd),
+            CommandHandler("change_timeout", change_timeout_cmd),
+            CommandHandler("change_concurrency", change_concurrency_cmd),
+        ],
         states={
             CHOOSING: [CallbackQueryHandler(button_callback)],
             TYPING_REPLY: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_setting_value)],
@@ -357,6 +395,11 @@ def main() -> None:
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("saved", show_saved))
     application.add_handler(CommandHandler("clearsaved", clear_saved))
+    # Also register the change_* commands so they can be called outside the conversation if needed
+    application.add_handler(CommandHandler("change_port", change_port_cmd))
+    application.add_handler(CommandHandler("change_timeout", change_timeout_cmd))
+    application.add_handler(CommandHandler("change_concurrency", change_concurrency_cmd))
+
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.Document.TEXT, handle_file))
 
