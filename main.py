@@ -250,11 +250,14 @@ async def received_setting_value(update: Update, context: ContextTypes.DEFAULT_T
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancels and ends the conversation."""
     if 'settings_message_id' in context.user_data:
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=context.user_data['settings_message_id'],
-            text="Operation cancelled."
-        )
+        try:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=context.user_data['settings_message_id'],
+                text="Operation cancelled."
+            )
+        except Exception:
+            pass # Message might have been deleted already
     else:
         await update.message.reply_text("Operation cancelled.")
         
