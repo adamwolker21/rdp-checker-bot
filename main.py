@@ -192,16 +192,8 @@ async def settings_entry_point(update: Update, context: ContextTypes.DEFAULT_TYP
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    if context.user_data.get('settings_message_id'):
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=context.user_data['settings_message_id'],
-            text="⚙️ Current Settings:",
-            reply_markup=reply_markup
-        )
-    else:
-        message = await update.message.reply_text("⚙️ Current Settings:", reply_markup=reply_markup)
-        context.user_data['settings_message_id'] = message.message_id
+    message = await update.message.reply_text("⚙️ Current Settings:", reply_markup=reply_markup)
+    context.user_data['settings_message_id'] = message.message_id
         
     return CHOOSING
 
@@ -212,7 +204,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     context.user_data['choice'] = choice
     
     if choice == 'done':
-        await query.edit_message_text(text="✅ Settings saved.")
+        await query.edit_message_text(text="✅ Settings menu closed.")
         context.user_data.clear()
         return ConversationHandler.END
     
@@ -240,19 +232,20 @@ async def received_setting_value(update: Update, context: ContextTypes.DEFAULT_T
         
         if (setting_key == 'timeout' and not 1 <= value <= 10) or \
            (setting_key == 'concurrency' and not 1 <= value <= 50):
-            await update.message.reply_text("Value is out of the allowed range. Please try again.")
+            await update.message.reply_text("Value is out of the allowed range. Please try again or type /cancel.")
             return TYPING_REPLY
 
         all_settings[user_id][setting_key] = value
         save_json_file(all_settings, USER_SETTINGS_FILE)
         
-        await update.message.delete() # Delete the user's number message
-        
+        await update.message.reply_text(f"✅ {setting_key.capitalize()} updated to {value}.")
+    
     except (ValueError, KeyError):
         await update.message.reply_text("Invalid input. Please enter a valid number.")
 
-    await settings_entry_point(update, context) # Show the menu again
-    return CHOOSING
+    await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=context.user_data['settings_message_id'])
+    context.user_data.clear()
+    return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancels and ends the conversation."""
