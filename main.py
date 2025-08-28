@@ -175,7 +175,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
-async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def settings_entry_point(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = str(update.effective_user.id)
     track_user(user_id)
     all_settings = load_json_file(USER_SETTINGS_FILE, default_type=dict)
@@ -226,7 +226,6 @@ async def received_setting_value(update: Update, context: ContextTypes.DEFAULT_T
         key_map = {'change_port': 'port', 'change_timeout': 'timeout', 'change_concurrency': 'concurrency'}
         setting_key = key_map[choice]
         
-        # Add validation
         if (setting_key == 'timeout' and not 1 <= value <= 10) or \
            (setting_key == 'concurrency' and not 1 <= value <= 50):
             await update.message.reply_text("Value is out of the allowed range. Please try again.")
@@ -235,14 +234,12 @@ async def received_setting_value(update: Update, context: ContextTypes.DEFAULT_T
         all_settings[user_id][setting_key] = value
         save_json_file(all_settings, USER_SETTINGS_FILE)
         
-        await update.message.reply_text(f"✅ {setting_key.capitalize()} updated to {value}.")
+        await update.message.reply_text(f"✅ {setting_key.capitalize()} updated to {value}.\n\nType /settings to change another setting.")
     
     except (ValueError, KeyError):
         await update.message.reply_text("Invalid input. Please enter a valid number.")
 
-    # Show the settings menu again
-    await show_settings(update, context)
-    return CHOOSING
+    return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancels and ends the conversation."""
@@ -326,7 +323,7 @@ def main() -> None:
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("settings", show_settings)],
+        entry_points=[CommandHandler("settings", settings_entry_point)],
         states={
             CHOOSING: [CallbackQueryHandler(button_callback)],
             TYPING_REPLY: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_setting_value)],
