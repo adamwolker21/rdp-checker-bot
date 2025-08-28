@@ -191,7 +191,18 @@ async def settings_entry_point(update: Update, context: ContextTypes.DEFAULT_TYP
         [InlineKeyboardButton("Done", callback_data='done')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("⚙️ Current Settings:", reply_markup=reply_markup)
+    
+    if context.user_data.get('settings_message_id'):
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=context.user_data['settings_message_id'],
+            text="⚙️ Current Settings:",
+            reply_markup=reply_markup
+        )
+    else:
+        message = await update.message.reply_text("⚙️ Current Settings:", reply_markup=reply_markup)
+        context.user_data['settings_message_id'] = message.message_id
+        
     return CHOOSING
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -201,7 +212,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     context.user_data['choice'] = choice
     
     if choice == 'done':
-        await query.edit_message_text(text="Settings saved.")
+        await query.edit_message_text(text="✅ Settings saved.")
+        context.user_data.clear()
         return ConversationHandler.END
     
     prompt_text = {
@@ -234,16 +246,18 @@ async def received_setting_value(update: Update, context: ContextTypes.DEFAULT_T
         all_settings[user_id][setting_key] = value
         save_json_file(all_settings, USER_SETTINGS_FILE)
         
-        await update.message.reply_text(f"✅ {setting_key.capitalize()} updated to {value}.\n\nType /settings to change another setting.")
-    
+        await update.message.delete() # Delete the user's number message
+        
     except (ValueError, KeyError):
         await update.message.reply_text("Invalid input. Please enter a valid number.")
 
-    return ConversationHandler.END
+    await settings_entry_point(update, context) # Show the menu again
+    return CHOOSING
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancels and ends the conversation."""
     await update.message.reply_text("Operation cancelled.")
+    context.user_data.clear()
     return ConversationHandler.END
 
 async def reset_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -329,6 +343,7 @@ def main() -> None:
             TYPING_REPLY: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_setting_value)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False
     )
 
     application.add_handler(conv_handler)
