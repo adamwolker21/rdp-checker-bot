@@ -351,6 +351,12 @@ async def clear_saved(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text("🗑️ All saved online results have been cleared.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # تحقق مما إذا كان المستخدم في حالة محادثة (إعدادات)
+    if context.user_data.get('choice'):
+        # إذا كان المستخدم في منتصف تغيير الإعدادات، تجاهل الرسالة
+        # وسيتم معالجتها بواسطة received_setting_value
+        return
+    
     track_user(update.effective_user.id)
     
     # تجاهل الرسائل التي تبدأ بشرطة مائلة (أوامر)
@@ -372,6 +378,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # تحقق مما إذا كان المستخدم في حالة محادثة (إعدادات)
+    if context.user_data.get('choice'):
+        # إذا كان المستخدم في منتصف تغيير الإعدادات، تجاهل الملف
+        await update.message.reply_text("Please finish changing your settings before uploading files.")
+        return
+        
     track_user(update.effective_user.id)
     file = await context.bot.get_file(update.message.document.file_id)
     file_path = f"{update.message.document.file_id}.txt"
@@ -421,9 +433,6 @@ def main() -> None:
     application.add_handler(CommandHandler("change_concurrency", change_concurrency_cmd))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.Document.TEXT, handle_file))
-    
-    # إضافة معالج منفصل لاستقبال ضغطات الأزرار
-    application.add_handler(CallbackQueryHandler(button_callback))
 
     # تشغيل البوت
     print("Bot is running...")
