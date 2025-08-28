@@ -299,10 +299,20 @@ async def clear_saved(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     track_user(update.effective_user.id)
     lines = [line.strip() for line in update.message.text.split('\n') if line.strip()]
-    if lines:
+    
+    # Check if any line looks like an IP address
+    is_valid_list = any(re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', line) for line in lines)
+
+    if is_valid_list:
         await run_scan_logic(lines, update, context)
     else:
-        await update.message.reply_text("No valid lines found to check. Please send a list of RDPs or a .txt file.")
+        await update.message.reply_text(
+            "It seems this is not a valid RDP list. Please send a message where each line starts with an IP address, like:\n\n"
+            "`123.45.67.89`\n"
+            "`123.45.67.89:8080`\n"
+            "`123.45.67.89:3389@user;pass`",
+            parse_mode='Markdown'
+        )
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     track_user(update.effective_user.id)
