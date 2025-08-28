@@ -3,6 +3,7 @@ import re
 import concurrent.futures
 import os
 import json
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -15,6 +16,13 @@ from telegram.ext import (
 )
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
+
+# تمكين التسجيل للمساعدة في تصحيح الأخطاء
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
 # الإعدادات الهامة (سيتم قراءتها من متغيرات البيئة)
@@ -361,6 +369,7 @@ def main() -> None:
     keep_alive_thread.start()
     print("Keep-alive server started.")
 
+    # إنشاء التطبيق مع إعدادات إضافية
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
     # إنشاء ConversationHandler للإعدادات
@@ -371,7 +380,7 @@ def main() -> None:
             TYPING_REPLY: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_setting_value)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=False
+        allow_reentry=True
     )
 
     # إضافة الhandlers بالترتيب الصحيح
@@ -387,12 +396,10 @@ def main() -> None:
     application.add_handler(CommandHandler("change_concurrency", change_concurrency_cmd))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.Document.TEXT, handle_file))
-    
-    # إضافة CallbackQueryHandler منفصل لمعالجة الضغط على الأزرار
-    application.add_handler(CallbackQueryHandler(button_callback))
 
+    # تشغيل البوت
     print("Bot is running...")
-    application.run_polling()
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
