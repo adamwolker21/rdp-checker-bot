@@ -417,7 +417,9 @@ def main() -> None:
             TYPING_REPLY: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_setting_value)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
-        allow_reentry=True
+        allow_reentry=True,
+        per_user=True,
+        per_chat=True
     )
 
     # إضافة الhandlers بالترتيب الصحيح
@@ -434,9 +436,12 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.Document.TEXT, handle_file))
 
+    # إضافة معالج منفصل لاستقبال ضغطات الأزرار (لضمان عملها لجميع المستخدمين)
+    application.add_handler(CallbackQueryHandler(button_callback, pattern='^(change_port|change_timeout|change_concurrency|done)$'))
+
     # تشغيل البوت
     print("Bot is running...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
