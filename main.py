@@ -3,24 +3,32 @@ import re
 import concurrent.futures
 import os
 import json
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+    ConversationHandler,
+    CallbackQueryHandler,
+)
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
 # -----------------------------------------------------------------------------
 # الإعدادات الهامة (سيتم قراءتها من متغيرات البيئة)
 # -----------------------------------------------------------------------------
-# 1. استبدل هذا بالتوكن الخاص ببوتك
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-
-# 2. استبدل هذا بالـ ID الخاص بحسابك في تليجرام لتمكين أوامر المدير
-ADMIN_ID = int(os.getenv("ADMIN_ID", 0)) 
+ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 # -----------------------------------------------------------------------------
 
 USER_SETTINGS_FILE = "user_settings.json"
 ALL_USERS_FILE = "all_users.json"
-SAVED_ONLINE_FILE = "saved_online.json" # ملف جديد لحفظ النتائج المتصلة
+SAVED_ONLINE_FILE = "saved_online.json"
+
+# --- States for ConversationHandler ---
+CHOOSING, TYPING_REPLY = range(2)
 
 # --- Web Server for UptimeRobot ---
 class KeepAliveHandler(BaseHTTPRequestHandler):
@@ -42,7 +50,6 @@ def run_keep_alive_server():
 
 # --- User Tracking and Settings Functions ---
 def load_json_file(filename, default_type=list):
-    """Loads a JSON file and returns its content."""
     if os.path.exists(filename):
         with open(filename, 'r') as f:
             try:
@@ -52,12 +59,10 @@ def load_json_file(filename, default_type=list):
     return default_type()
 
 def save_json_file(data, filename):
-    """Saves data to a JSON file."""
     with open(filename, 'w') as f:
         json.dump(data, f, indent=4)
 
 def track_user(user_id):
-    """Adds a user ID to the list of all users if not already present."""
     user_id_str = str(user_id)
     all_users = load_json_file(ALL_USERS_FILE, default_type=list)
     if user_id_str not in all_users:
@@ -66,31 +71,15 @@ def track_user(user_id):
 
 # --- Core Checking Logic ---
 def check_rdp(line_info):
-    """
-    Checks the status of a single RDP connection.
-    """
-    line = line_info['line']
-    default_port = line_info['default_port']
-    timeout = line_info['timeout']
-    
-    result = {
-        'line': line,
-        'status': 'Invalid',
-        'updatedLine': line
-    }
-
+    line, default_port, timeout = line_info['line'], line_info['default_port'], line_info['timeout']
+    result = {'line': line, 'status': 'Invalid', 'updatedLine': line}
     match = re.match(r'^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?:[:;]\s*(\d+))?.*', line)
-    
-    ip = None
-    port_to_check = default_port
-    line_had_port = False
-
+    ip, port_to_check, line_had_port = (None, default_port, False)
     if match:
         ip = match.group(1)
         if match.group(2):
             port_to_check = int(match.group(2))
             line_had_port = True
-
     if ip and re.match(r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$", ip):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(timeout)
@@ -105,26 +94,19 @@ def check_rdp(line_info):
             s.close()
     else:
         result['status'] = 'Invalid'
-        
     return result
 
 # --- Central Scan Logic ---
 async def run_scan_logic(lines, update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """The core logic for scanning a list of lines and reporting results."""
     user_id = str(update.effective_user.id)
     all_settings = load_json_file(USER_SETTINGS_FILE, default_type=dict)
     user_settings = all_settings.get(user_id, {'port': 3389, 'timeout': 2, 'concurrency': 15})
-
     status_message = await update.message.reply_text(f"🔍 Received {len(lines)} lines. Starting scan...")
-
     tasks = [{'line': line, 'default_port': user_settings['port'], 'timeout': user_settings['timeout']} for line in lines]
-    
     online_results, offline_results, invalid_results = [], [], []
-    
     checked_count = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=user_settings['concurrency']) as executor:
         futures = [executor.submit(check_rdp, task) for task in tasks]
-        
         for future in concurrent.futures.as_completed(futures):
             try:
                 res = future.result()
@@ -134,7 +116,6 @@ async def run_scan_logic(lines, update: Update, context: ContextTypes.DEFAULT_TY
                     offline_results.append(res['line'])
                 else:
                     invalid_results.append(res['line'])
-                
                 checked_count += 1
                 if checked_count % 5 == 0 or checked_count == len(lines):
                      await context.bot.edit_message_text(
@@ -145,40 +126,26 @@ async def run_scan_logic(lines, update: Update, context: ContextTypes.DEFAULT_TY
             except Exception as e:
                 print(f"An error occurred during processing: {e}")
 
-    # --- Save Online Results (For ALL users) ---
     if online_results:
         saved_online = load_json_file(SAVED_ONLINE_FILE, default_type=list)
         new_items = [item for item in online_results if item not in saved_online]
         saved_online.extend(new_items)
         save_json_file(saved_online, SAVED_ONLINE_FILE)
 
-    # --- Create Formatted Report String ---
-    report_content = [
-        "📊 *RDP Scan Results* 📊", "="*20, f"*Total:* {len(lines)}"
-    ]
+    report_content = ["📊 *RDP Scan Results* 📊", "="*20, f"*Total:* {len(lines)}"]
     if online_results:
         report_content.extend([f"\n*✅ Online: {len(online_results)}*", *online_results])
     if offline_results:
         report_content.extend([f"\n*❌ Offline: {len(offline_results)}*", *offline_results])
     if invalid_results:
         report_content.extend([f"\n*⚠️ Invalid: {len(invalid_results)}*", *invalid_results])
-    
     final_report = "\n".join(report_content)
-
-    await context.bot.edit_message_text(
-        chat_id=update.effective_chat.id,
-        message_id=status_message.message_id,
-        text=final_report,
-        parse_mode='Markdown'
-    )
-    
+    await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status_message.message_id, text=final_report, parse_mode='Markdown')
     report_filename = "RDP_Check_Results.txt"
     with open(report_filename, 'w', encoding='utf-8') as f:
         f.write(final_report.replace('*', ''))
-    
     with open(report_filename, 'rb') as f:
         await context.bot.send_document(chat_id=update.effective_chat.id, document=f)
-
 
 # --- Telegram Bot Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -196,11 +163,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Here are the available commands:\n\n"
         "*/start* - Shows the welcome message.\n"
         "*/help* - Shows this help message.\n"
-        "*/settings* - Displays your current scan settings.\n"
-        "*/set <port> <timeout> <concurrency>* - Sets new values for your settings. \n_Example: `/set 3389 3 20`_\n"
+        "*/settings* - View and change your scan settings.\n"
         "*/reset* - Resets your settings to the default values."
     )
-    
     if user_id == ADMIN_ID:
         help_text += (
             "\n\n*Admin Commands:*\n"
@@ -208,79 +173,103 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "*/saved* - View all saved online results.\n"
             "*/clearsaved* - Clear all saved online results."
         )
-
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
-async def set_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = str(update.effective_user.id)
-    track_user(user_id)
-    try:
-        parts = context.args
-        if len(parts) == 3:
-            port, timeout, concurrency = map(int, parts)
-            
-            all_settings = load_json_file(USER_SETTINGS_FILE, default_type=dict)
-            if user_id not in all_settings:
-                all_settings[user_id] = {}
-            all_settings[user_id].update({'port': port, 'timeout': timeout, 'concurrency': concurrency})
-            save_json_file(all_settings, USER_SETTINGS_FILE)
-            
-            await update.message.reply_text(
-                f"✅ Settings updated successfully:\n"
-                f"- Default Port: {port}\n"
-                f"- Timeout: {timeout} seconds\n"
-                f"- Concurrency: {concurrency}"
-            )
-        else:
-            await update.message.reply_text("Incorrect usage. Example: /set <port> <timeout> <concurrency>\nExample: /set 3389 2 15")
-    except (IndexError, ValueError):
-        await update.message.reply_text("Invalid input. Please enter valid numbers for the settings.")
-
-async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = str(update.effective_user.id)
     track_user(user_id)
     all_settings = load_json_file(USER_SETTINGS_FILE, default_type=dict)
     user_settings = all_settings.get(user_id, {})
-    
     port = user_settings.get('port', 3389)
     timeout = user_settings.get('timeout', 2)
     concurrency = user_settings.get('concurrency', 15)
     
-    settings_text = (
-        f"⚙️ Current Settings:\n"
-        f"- Default Port: {port}\n"
-        f"- Timeout: {timeout} seconds\n"
-        f"- Concurrency: {concurrency}"
-    )
-    await update.message.reply_text(settings_text)
+    keyboard = [
+        [InlineKeyboardButton(f"Change Port ({port})", callback_data='change_port')],
+        [InlineKeyboardButton(f"Change Timeout ({timeout}s)", callback_data='change_timeout')],
+        [InlineKeyboardButton(f"Change Concurrency ({concurrency})", callback_data='change_concurrency')],
+        [InlineKeyboardButton("Done", callback_data='done')],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("⚙️ Current Settings:", reply_markup=reply_markup)
+    return CHOOSING
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    choice = query.data
+    context.user_data['choice'] = choice
+    
+    if choice == 'done':
+        await query.edit_message_text(text="Settings saved.")
+        return ConversationHandler.END
+    
+    prompt_text = {
+        'change_port': "Please enter the new default port:",
+        'change_timeout': "Please enter the new timeout in seconds (1-10):",
+        'change_concurrency': "Please enter the new concurrency level (1-50):"
+    }
+    await query.edit_message_text(text=prompt_text[choice])
+    return TYPING_REPLY
+
+async def received_setting_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = str(update.effective_user.id)
+    choice = context.user_data.get('choice')
+    text = update.message.text
+    
+    try:
+        value = int(text)
+        all_settings = load_json_file(USER_SETTINGS_FILE, default_type=dict)
+        if user_id not in all_settings:
+            all_settings[user_id] = {}
+
+        key_map = {'change_port': 'port', 'change_timeout': 'timeout', 'change_concurrency': 'concurrency'}
+        setting_key = key_map[choice]
+        
+        # Add validation
+        if (setting_key == 'timeout' and not 1 <= value <= 10) or \
+           (setting_key == 'concurrency' and not 1 <= value <= 50):
+            await update.message.reply_text("Value is out of the allowed range. Please try again.")
+            return TYPING_REPLY
+
+        all_settings[user_id][setting_key] = value
+        save_json_file(all_settings, USER_SETTINGS_FILE)
+        
+        await update.message.reply_text(f"✅ {setting_key.capitalize()} updated to {value}.")
+    
+    except (ValueError, KeyError):
+        await update.message.reply_text("Invalid input. Please enter a valid number.")
+
+    # Show the settings menu again
+    await show_settings(update, context)
+    return CHOOSING
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancels and ends the conversation."""
+    await update.message.reply_text("Operation cancelled.")
+    return ConversationHandler.END
 
 async def reset_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     track_user(user_id)
     all_settings = load_json_file(USER_SETTINGS_FILE, default_type=dict)
     if user_id in all_settings:
-        all_settings[user_id] = {} # Clear all settings for the user
+        all_settings[user_id] = {}
         save_json_file(all_settings, USER_SETTINGS_FILE)
     await update.message.reply_text("⚙️ All your settings have been reset to default.")
-    await show_settings(update, context)
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin command to show bot statistics."""
     if update.effective_user.id != ADMIN_ID: return
     all_users = load_json_file(ALL_USERS_FILE, default_type=list)
     await update.message.reply_text(f"📊 Bot Stats:\nThere are currently {len(all_users)} unique users who have interacted with the bot.")
 
 async def show_saved(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin command to show saved online results."""
     if update.effective_user.id != ADMIN_ID: return
     saved_online = load_json_file(SAVED_ONLINE_FILE, default_type=list)
     if not saved_online:
         await update.message.reply_text("🗂️ The saved results list is currently empty.")
         return
-    
     report_text = f"🗂️ Saved Online RDPs ({len(saved_online)}):\n\n" + "\n".join(saved_online)
-    
-    # Telegram messages have a character limit, so send as a file if too long
     if len(report_text) > 4000:
         with open("saved_results.txt", "w", encoding="utf-8") as f:
             f.write("\n".join(saved_online))
@@ -291,7 +280,6 @@ async def show_saved(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text(report_text)
 
 async def clear_saved(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin command to clear all saved results."""
     if update.effective_user.id != ADMIN_ID: return
     save_json_file([], SAVED_ONLINE_FILE)
     await update.message.reply_text("🗑️ All saved online results have been cleared.")
@@ -299,10 +287,7 @@ async def clear_saved(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     track_user(update.effective_user.id)
     lines = [line.strip() for line in update.message.text.split('\n') if line.strip()]
-    
-    # Check if any line looks like an IP address
     is_valid_list = any(re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', line) for line in lines)
-
     if is_valid_list:
         await run_scan_logic(lines, update, context)
     else:
@@ -320,35 +305,38 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     file = await context.bot.get_file(update.message.document.file_id)
     file_path = f"{update.message.document.file_id}.txt"
     await file.download_to_drive(file_path)
-    
     with open(file_path, 'r', encoding='utf-8') as f:
         lines = [line.strip() for line in f if line.strip()]
-    
-    os.remove(file_path) # Clean up the downloaded file
-
+    os.remove(file_path)
     if lines:
         await run_scan_logic(lines, update, context)
     else:
         await update.message.reply_text("The uploaded file is empty.")
 
 def main() -> None:
-    """Start the bot."""
     if not TELEGRAM_BOT_TOKEN or not ADMIN_ID:
         print("!!! ERROR: Please set TELEGRAM_BOT_TOKEN and ADMIN_ID environment variables !!!")
         return
 
-    # Start the keep-alive server in a separate thread
     keep_alive_thread = threading.Thread(target=run_keep_alive_server)
     keep_alive_thread.daemon = True
     keep_alive_thread.start()
     print("Keep-alive server started.")
 
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("settings", show_settings)],
+        states={
+            CHOOSING: [CallbackQueryHandler(button_callback)],
+            TYPING_REPLY: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_setting_value)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
 
+    application.add_handler(conv_handler)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("set", set_settings))
-    application.add_handler(CommandHandler("settings", show_settings))
     application.add_handler(CommandHandler("reset", reset_settings))
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("saved", show_saved))
