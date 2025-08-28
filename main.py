@@ -2,7 +2,6 @@ import socket
 import re
 import concurrent.futures
 import os
-import json
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -31,9 +30,10 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 # -----------------------------------------------------------------------------
 
-USER_SETTINGS_FILE = "user_settings.json"
-ALL_USERS_FILE = "all_users.json"
-SAVED_ONLINE_FILE = "saved_online.json"
+# تخزين البيانات في الذاكرة بدلاً من ملفات JSON
+user_settings = {}  # {user_id: {'port': 3389, 'timeout': 2, 'concurrency': 15}}
+all_users = set()   # مجموعة من معرفات المستخدمين
+saved_online = []   # قائمة بالنتائج المحفوظة
 
 # --- States for ConversationHandler ---
 CHOOSING, TYPING_REPLY = range(2)
@@ -57,25 +57,10 @@ def run_keep_alive_server():
     httpd.serve_forever()
 
 # --- User Tracking and Settings Functions ---
-def load_json_file(filename, default_type=list):
-    if os.path.exists(filename):
-        with open(filename, 'r') as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                return default_type()
-    return default_type()
-
-def save_json_file(data, filename):
-    with open(filename, 'w') as f:
-        json.dump(data, f, indent=4)
-
 def track_user(user_id):
     user_id_str = str(user_id)
-    all_users = load_json_file(ALL_USERS_FILE, default_type=list)
     if user_id_str not in all_users:
-        all_users.append(user_id_str)
-        save_json_file(all_users, ALL_USERS_FILE)
+        all_users.add(user_id_str)
 
 # --- Core Checking Logic ---
 def check_rdp(line_info):
@@ -107,20 +92,28 @@ def check_rdp(line_info):
 # --- Central Scan Logic ---
 async def run_scan_logic(lines, update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    all_settings = load_json_file(USER_SETTINGS_FILE, default_type=dict)
-    user_settings = all_settings.get(user_id, {'port': 3389, 'timeout': 2, 'concurrency': 15})
     
-    # إضافة تحقق إضافي لإعدادات المستخدم
-    if 'concurrency' not in user_settings or not (1 <= user_settings['concurrency'] <= 50):
-        user_settings['concurrency'] = 15
+    # الحصول على إعدادات المستخدم مع القيم الافتراضية
+    user_setting = user_settings.get(user_id, {})
+    port = user_setting.get('port', 3389)
+    timeout = user_setting.get('timeout', 2)
+    concurrency = user_setting.get('concurrency', 15)
+    
+    # التأكد من أن القيم ضمن النطاق المسموح
+    if not (1 <= port <= 65535):
+        port = 3389
+    if not (1 <= timeout <= 10):
+        timeout = 2
+    if not (1 <= concurrency <= 50):
+        concurrency = 15
     
     status_message = await update.message.reply_text(f"🔍 Received {len(lines)} lines. Starting scan...")
-    tasks = [{'line': line, 'default_port': user_settings['port'], 'timeout': user_settings['timeout']} for line in lines]
+    tasks = [{'line': line, 'default_port': port, 'timeout': timeout} for line in lines]
     online_results, offline_results, invalid_results = [], [], []
     checked_count = 0
     
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=user_settings['concurrency']) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
             futures = [executor.submit(check_rdp, task) for task in tasks]
             for future in concurrent.futures.as_completed(futures):
                 try:
@@ -143,10 +136,10 @@ async def run_scan_logic(lines, update: Update, context: ContextTypes.DEFAULT_TY
                     invalid_results.append(f"Error processing line: {res.get('line', 'Unknown')}")
 
         if online_results:
-            saved_online = load_json_file(SAVED_ONLINE_FILE, default_type=list)
-            new_items = [item for item in online_results if item not in saved_online]
-            saved_online.extend(new_items)
-            save_json_file(saved_online, SAVED_ONLINE_FILE)
+            # حفظ النتائج الجديدة
+            for item in online_results:
+                if item not in saved_online:
+                    saved_online.append(item)
 
         report_content = ["📊 *RDP Scan Results* 📊", "="*20, f"*Total:* {len(lines)}"]
         if online_results:
@@ -215,11 +208,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def settings_entry_point(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = str(update.effective_user.id)
     track_user(user_id)
-    all_settings = load_json_file(USER_SETTINGS_FILE, default_type=dict)
-    user_settings = all_settings.get(user_id, {})
-    port = user_settings.get('port', 3389)
-    timeout = user_settings.get('timeout', 2)
-    concurrency = user_settings.get('concurrency', 15)
+    
+    user_setting = user_settings.get(user_id, {})
+    port = user_setting.get('port', 3389)
+    timeout = user_setting.get('timeout', 2)
+    concurrency = user_setting.get('concurrency', 15)
     
     keyboard = [
         [InlineKeyboardButton(f"Change Port ({port})", callback_data='change_port')],
@@ -246,7 +239,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return ConversationHandler.END
 
     prompt_text = {
-        'change_port': "Please enter the new default port:",
+        'change_port': "Please enter the new default port (1-65535):",
         'change_timeout': "Please enter the new timeout in seconds (1-10):",
         'change_concurrency': "Please enter the new concurrency level (1-50):"
     }
@@ -257,7 +250,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def change_port_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     track_user(update.effective_user.id)
     context.user_data['choice'] = 'change_port'
-    await update.message.reply_text("Please enter the new default port:")
+    await update.message.reply_text("Please enter the new default port (1-65535):")
     return TYPING_REPLY
 
 async def change_timeout_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -279,9 +272,8 @@ async def received_setting_value(update: Update, context: ContextTypes.DEFAULT_T
     
     try:
         value = int(text)
-        all_settings = load_json_file(USER_SETTINGS_FILE, default_type=dict)
-        if user_id not in all_settings:
-            all_settings[user_id] = {}
+        if user_id not in user_settings:
+            user_settings[user_id] = {}
 
         key_map = {'change_port': 'port', 'change_timeout': 'timeout', 'change_concurrency': 'concurrency'}
         setting_key = key_map.get(choice)
@@ -290,14 +282,14 @@ async def received_setting_value(update: Update, context: ContextTypes.DEFAULT_T
             context.user_data.clear()
             return ConversationHandler.END
         
-        if (setting_key == 'timeout' and not 1 <= value <= 10) or \
+        # التحقق من النطاقات المسموحة
+        if (setting_key == 'port' and not 1 <= value <= 65535) or \
+           (setting_key == 'timeout' and not 1 <= value <= 10) or \
            (setting_key == 'concurrency' and not 1 <= value <= 50):
             await update.message.reply_text("Value is out of the allowed range. Please try again or type /cancel.")
             return TYPING_REPLY
 
-        all_settings[user_id][setting_key] = value
-        save_json_file(all_settings, USER_SETTINGS_FILE)
-        
+        user_settings[user_id][setting_key] = value
         await update.message.reply_text(f"✅ {setting_key.capitalize()} updated to {value}.")
     
     except (ValueError, KeyError):
@@ -327,22 +319,18 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def reset_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     track_user(user_id)
-    all_settings = load_json_file(USER_SETTINGS_FILE, default_type=dict)
-    if user_id in all_settings:
-        all_settings[user_id] = {}
-        save_json_file(all_settings, USER_SETTINGS_FILE)
+    if user_id in user_settings:
+        user_settings[user_id] = {}
     await update.message.reply_text("⚙️ All your settings have been reset to default.")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id != ADMIN_ID: 
         return
-    all_users = load_json_file(ALL_USERS_FILE, default_type=list)
     await update.message.reply_text(f"📊 Bot Stats:\nThere are currently {len(all_users)} unique users who have interacted with the bot.")
 
 async def show_saved(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id != ADMIN_ID: 
         return
-    saved_online = load_json_file(SAVED_ONLINE_FILE, default_type=list)
     if not saved_online:
         await update.message.reply_text("🗂️ The saved results list is currently empty.")
         return
@@ -359,7 +347,7 @@ async def show_saved(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def clear_saved(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id != ADMIN_ID: 
         return
-    save_json_file([], SAVED_ONLINE_FILE)
+    saved_online.clear()
     await update.message.reply_text("🗑️ All saved online results have been cleared.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
